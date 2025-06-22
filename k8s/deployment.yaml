@@ -16,7 +16,6 @@ spec:
     spec:
       containers:
       - name: demo-crm
-        image: IMAGE_PLACEHOLDER
+        image: pwstaging/demo-crm:latest
         ports:
         - containerPort: 3000
-
