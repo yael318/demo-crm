@@ -1,150 +1,84 @@
-name: Demo CRM CI/CD Pipeline (Docker Hub)
+name: Demo CRM CI/CD Pipeline
 
 on:
   push:
-    branches: [ main ]
-  workflow_dispatch:
-
-env:
-  DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-  IMAGE_NAME: demo-crm
+    branches:
+      - main
 
 jobs:
-  ci-cd-pipeline:
+  build-and-deploy:
     runs-on: ubuntu-latest
-    
+
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
-      
-    - name: Generate image tag
-      id: generate-tag
+      uses: actions/checkout@v3
+
+    - name: Set environment flags
       run: |
-        TAG="build-$(date +%Y%m%d)-${GITHUB_SHA:0:7}"
-        echo "tag=${TAG}" >> $GITHUB_OUTPUT
-        echo "Generated tag: ${TAG}"
-        
+        echo "DOCKERHUB_ENABLED=$([[ -n '${{ secrets.DOCKERHUB_USERNAME }}' && -n '${{ secrets.DOCKERHUB_TOKEN }}' ]] && echo true || echo false)" >> $GITHUB_ENV
+        echo "GHCR_ENABLED=$([[ -n '${{ secrets.GHCR_TOKEN }}' ]] && echo true || echo false)" >> $GITHUB_ENV
+
     - name: Log in to Docker Hub
-      uses: docker/login-action@v3
+      if: ${{ env.DOCKERHUB_ENABLED == 'true' }}
+      uses: docker/login-action@v2
       with:
-        username: ${{ env.DOCKERHUB_USERNAME }}
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
         password: ${{ secrets.DOCKERHUB_TOKEN }}
-        
-    - name: Pull, retag and push Demo CRM image
+
+    - name: Log in to GitHub Container Registry
+      if: ${{ env.GHCR_ENABLED == 'true' }}
+      uses: docker/login-action@v2
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GHCR_TOKEN }}
+
+    - name: Pull existing demo-crm image
+      run: docker pull pwstaging/demo-crm:latest
+
+    - name: Retag image
       run: |
-        TAG="${{ steps.generate-tag.outputs.tag }}"
-        
-        echo "=== CI: Building and Publishing Image ==="
-        echo "Pulling original image..."
-        docker pull pwstaging/demo-crm:latest
-        
-        echo "Retagging image..."
-        docker tag pwstaging/demo-crm:latest ${{ env.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:${TAG}
-        docker tag pwstaging/demo-crm:latest ${{ env.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:latest
-        
-        echo "Pushing images..."
-        docker push ${{ env.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:${TAG}
-        docker push ${{ env.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:latest
-        
-        echo "Images pushed successfully to Docker Hub"
-        
-    - name: Create kind cluster for testing
-      run: |
-        echo "=== CD: Creating Test Environment ==="
-        # Install kind
-        curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.20.0/kind-linux-amd64
-        chmod +x ./kind
-        sudo mv ./kind /usr/local/bin/kind
-        
-        # Create cluster
-        kind create cluster --wait 300s
-        
-        echo "Test cluster created successfully"
-        kubectl cluster-info
-        kubectl get nodes
-        
-    - name: Prepare and test deployment
-      run: |
-        TAG="${{ steps.generate-tag.outputs.tag }}"
-        IMAGE="${{ env.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:${TAG}"
-        
-        echo "=== CD: Testing Deployment ==="
-        echo "Updating deployment with image: ${IMAGE}"
-        sed -i "s|IMAGE_PLACEHOLDER|${IMAGE}|g" k8s/deployment.yaml
-        
-        echo "Deploying to test environment..."
-        kubectl apply -f k8s/deployment.yaml
-        
-        echo "Waiting for deployment..."
-        kubectl wait --for=condition=available deployment/demo-crm --timeout=300s
-        
-        echo "Deployment test successful"
-        
-    - name: Verify deployment works
-      run: |
-        echo "=== CD: Verifying Application ==="
-        
-        kubectl get all
-        echo ""
-        
-        echo "Testing application connectivity..."
-        kubectl port-forward deployment/demo-crm 3000:3000 &
-        PORT_FORWARD_PID=$!
-        
-        sleep 15
-        
-        if curl -f http://localhost:3000/; then
-          echo "Application is responding correctly!"
+        TAG=demo-crm:${{ github.run_number }}
+        if [ "${{ env.DOCKERHUB_ENABLED }}" == "true" ]; then
+          docker tag pwstaging/demo-crm:latest ${{ secrets.DOCKERHUB_USERNAME }}/$TAG
         else
-          echo "Application test failed"
-          kubectl logs -l app=demo-crm --tail=20
-          exit 1
+          docker tag pwstaging/demo-crm:latest ghcr.io/${{ github.repository_owner }}/$TAG
         fi
-        
-        kill $PORT_FORWARD_PID
-        
-    - name: Display deployment instructions
+
+    - name: Push retagged image
       run: |
-        TAG="${{ steps.generate-tag.outputs.tag }}"
-        
-        echo "=== CI/CD Pipeline Complete ==="
-        echo ""
-        echo "CI (Continuous Integration) Results:"
-        echo "   Image built: ${{ env.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:${TAG}"
-        echo "   Image pushed to Docker Hub: ${{ env.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:latest"
-        echo "   Registry URL: https://hub.docker.com/r/${{ env.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}"
-        echo ""
-        echo "CD (Continuous Deployment) Results:"
-        echo "   Deployment tested in ephemeral cluster"
-        echo "   Application health verified"
-        echo "   Ready for manual production deployment"
-        echo ""
-        echo "=== Manual Deployment to Killercoda ==="
-        echo ""
-        echo "Your image is ready! To deploy to Killercoda:"
-        echo ""
-        echo "1. In your Killercoda terminal, run:"
-        echo "   git clone https://github.com/${{ github.repository }}.git"
-        echo "   cd demo-crm"
-        echo ""
-        echo "2. Update the deployment image:"
-        echo "   sed -i 's|IMAGE_PLACEHOLDER|${{ env.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:${TAG}|g' k8s/deployment.yaml"
-        echo ""
-        echo "3. Deploy the application:"
-        echo "   kubectl apply -f k8s/deployment.yaml"
-        echo "   kubectl wait --for=condition=available deployment/demo-crm --timeout=300s"
-        echo ""
-        echo "4. Access your application:"
-        echo "   kubectl port-forward --address 0.0.0.0 deployment/demo-crm 3000:3000"
-        echo ""
-        echo "5. Use Killercoda Traffic Port Accessor:"
-        echo "   - Click three bars in top-right corner"
-        echo "   - Select 'Ports' -> Enter '3000' -> Click 'Access'"
-        echo ""
-        echo "6. Success: You should see Demo CRM with two customer cards!"
-        echo ""
-        echo "=== Why This Approach? ==="
-        echo "- Automated Testing: Proves your deployment works before manual steps"
-        echo "- Professional Practice: Separates CI/CD testing from production deployment"
-        echo "- Learning Value: Experience both automated and manual deployment workflows"
-        echo "- Cost Effective: Uses free tools (kind + GitHub Actions + Killercoda)"
+        TAG=demo-crm:${{ github.run_number }}
+        if [ "${{ env.DOCKERHUB_ENABLED }}" == "true" ]; then
+          docker push ${{ secrets.DOCKERHUB_USERNAME }}/$TAG
+        else
+          docker push ghcr.io/${{ github.repository_owner }}/$TAG
+        fi
+
+    - name: Set up kind (Kubernetes in Docker)
+      uses: helm/kind-action@v1.8.0
+
+    - name: Deploy to kind cluster
+      run: |
+        kubectl apply -f k8s/deployment.yaml
+        if [ "${{ env.DOCKERHUB_ENABLED }}" == "true" ]; then
+          kubectl set image deployment/demo-crm demo-crm=${{ secrets.DOCKERHUB_USERNAME }}/demo-crm:${{ github.run_number }}
+        else
+          kubectl set image deployment/demo-crm demo-crm=ghcr.io/${{ github.repository_owner }}/demo-crm:${{ github.run_number }}
+        fi
+
+    - name: Wait for deployment rollout
+      run: kubectl rollout status deployment/demo-crm --timeout=120s
+
+    - name: Port-forward and test app
+      run: |
+        POD=$(kubectl get pods -l app=demo-crm -o jsonpath='{.items[0].metadata.name}')
+        kubectl port-forward $POD 3000:3000 &
+        PF_PID=$!
+        sleep 15
+        echo "Checking if the app responds on http://localhost:3000"
+        curl --retry 5 --retry-delay 5 --fail http://localhost:3000 || (echo "App failed to respond" && kill $PF_PID && exit 1)
+        kill $PF_PID
+
+    - name: Clean up kind cluster
+      if: always()
+      run: kind delete cluster
