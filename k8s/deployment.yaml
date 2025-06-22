@@ -16,6 +16,6 @@ spec:
     spec:
       containers:
       - name: demo-crm
-        image: IMAGE_PLACEHOLDER
+        image: yael318/demo-crm:latest
         ports:
         - containerPort: 3000
