@@ -67,7 +67,7 @@ jobs:
         fi
 
     - name: Wait for deployment rollout
-      run: kubectl rollout status deployment/demo-crm --timeout=120s
+      run: kubectl rollout status deployment/demo-crm --timeout=300s
 
     - name: Port-forward and test app
       run: |
